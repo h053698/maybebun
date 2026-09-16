@@ -61,6 +61,7 @@ _maybebun_choose() {
   echo
 
   local choice
+  local exit_code
 
   choice=$(
     printf 'Bun\t%s\n%s\t%s\n' \
@@ -69,16 +70,15 @@ _maybebun_choose() {
       "$original_display" |
       gum choose \
         --header "Run with" \
-        --footer "↑↓ move  •  enter select  •  esc cancel" \
         --cursor "❯ " \
         --cursor-prefix "  " \
         --selected-prefix "❯ " \
         --unselected-prefix "  "
   )
 
-  local status=$?
+  exit_code=$?
 
-  if (( status != 0 )) || [[ -z "$choice" ]]; then
+  if (( exit_code != 0 )) || [[ -z "$choice" ]]; then
     echo
     return 130
   fi
