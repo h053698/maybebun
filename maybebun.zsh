@@ -32,42 +32,50 @@ _maybebun_check() {
 }
 
 
+# Render an argv array as a human-readable command line.
+# Display only — never fed back to the shell for execution.
 _maybebun_display() {
-  local result=""
-  local arg
+  local -a _mb_words
+  _mb_words=("${(@P)1}")
 
-  for arg in "$@"; do
-    if [[ -z "$result" ]]; then
-      result="${(q)arg}"
-    else
-      result="$result ${(q)arg}"
-    fi
-  done
-
-  print -r -- "$result"
+  print -r -- "${(j: :)${(q-)_mb_words[@]}}"
 }
 
 
+# Show the picker and run the chosen command.
+#
+# Both commands are passed by *array name*, so they are executed as
+# argv arrays via "$cmd[@]" rather than being re-parsed by eval.
 _maybebun_choose() {
   local label="$1"
-  shift
+  local original_name="$2"
+  local bun_name="$3"
 
-  local original_display="$1"
-  shift
+  # Deliberately odd local names: ${(@P)} resolves in this scope, so a local
+  # sharing the caller's variable name would shadow it and expand to nothing.
+  local -a _mb_orig _mb_bun
+  _mb_orig=("${(@P)original_name}")
+  _mb_bun=("${(@P)bun_name}")
 
-  local bun_display="$1"
-  shift
+  # Non-interactive (script, pipe, subshell): no prompt is possible.
+  # Run the command the user actually typed.
+  if [[ ! -t 0 || ! -t 2 ]]; then
+    command "${_mb_orig[@]}"
+    return $?
+  fi
+
+  local original_display bun_display
+  original_display="$(_maybebun_display _mb_orig)"
+  bun_display="$(_maybebun_display _mb_bun)"
 
   echo
 
-  local choice
-  local exit_code
+  local choice exit_code
 
   choice=$(
-    printf 'Bun\t%s\n%s\t%s\n' \
-      "$bun_display" \
-      "$label" \
-      "$original_display" |
+    printf '%-*s  %s\n' \
+      3 "Bun" "$bun_display" \
+      3 "$label" "$original_display" |
       gum choose \
         --header "Run with" \
         --cursor "❯ " \
@@ -78,6 +86,7 @@ _maybebun_choose() {
 
   exit_code=$?
 
+  # Esc / Ctrl-C / no selection → run nothing.
   if (( exit_code != 0 )) || [[ -z "$choice" ]]; then
     echo
     return 130
@@ -85,10 +94,12 @@ _maybebun_choose() {
 
   echo
 
-  if [[ "$choice" == Bun$'\t'* ]]; then
-    eval "$bun_display"
+  if [[ "$choice" == "Bun"* ]]; then
+    command "${_mb_bun[@]}"
   else
-    eval "$original_display"
+    # `command` bypasses this wrapper function, so npm/npx runs for real
+    # instead of recursing back into maybeBun.
+    command "${_mb_orig[@]}"
   fi
 }
 
@@ -104,56 +115,46 @@ npm() {
     return $?
   fi
 
-  local original_display
-  local bun_display=""
-  local args=""
+  local -a original_cmd bun_cmd rest
   local arg
 
-  original_display="$(_maybebun_display npm "$@")"
+  original_cmd=(npm "$@")
+  bun_cmd=()
+  rest=("${@[2,-1]}")
 
   case "$1" in
 
-    install|i)
+    install|i|add)
 
       # npm install
       if (( $# == 1 )); then
-        bun_display="bun install"
+        bun_cmd=(bun install)
 
-      # npm install -g foo
-      elif [[ "$2" == "-g" || "$2" == "--global" ]]; then
-        args="$(_maybebun_display "${@[3,-1]}")"
-        bun_display="bun add -g $args"
-
-      # npm install -D foo
-      elif [[ "$2" == "-D" || "$2" == "--save-dev" ]]; then
-        args="$(_maybebun_display "${@[3,-1]}")"
-        bun_display="bun add -d $args"
-
-      # npm install -O foo
-      elif [[ "$2" == "-O" || "$2" == "--save-optional" ]]; then
-        args="$(_maybebun_display "${@[3,-1]}")"
-        bun_display="bun add --optional $args"
-
-      # npm install foo
+      # npm install <args...>
       else
         local -a converted
         converted=()
 
-        for arg in "${@[2,-1]}"; do
+        for arg in "${rest[@]}"; do
           case "$arg" in
-            --save-dev)
-              converted+=("-d")
+            -D|--save-dev)
+              converted+=(--dev)
               ;;
 
-            --global)
-              converted+=("-g")
+            -O|--save-optional)
+              converted+=(--optional)
               ;;
 
-            --save-optional)
-              converted+=("--optional")
+            -E|--save-exact)
+              converted+=(--exact)
               ;;
 
-            --save)
+            -g|--global)
+              converted+=(--global)
+              ;;
+
+            # Default in both npm and Bun. Nothing to translate.
+            -S|--save)
               ;;
 
             *)
@@ -162,20 +163,23 @@ npm() {
           esac
         done
 
-        args="$(_maybebun_display "${converted[@]}")"
-        bun_display="bun add $args"
+        bun_cmd=(bun add "${converted[@]}")
       fi
       ;;
 
 
     uninstall|remove|rm|un)
-      args="$(_maybebun_display "${@[2,-1]}")"
-      bun_display="bun remove $args"
+      if (( $# < 2 )); then
+        command npm "$@"
+        return $?
+      fi
+
+      bun_cmd=(bun remove "${rest[@]}")
       ;;
 
 
     ci)
-      bun_display="bun install --frozen-lockfile"
+      bun_cmd=(bun install --frozen-lockfile)
       ;;
 
 
@@ -185,8 +189,7 @@ npm() {
         return $?
       fi
 
-      args="$(_maybebun_display "${@[2,-1]}")"
-      bun_display="bun run $args"
+      bun_cmd=(bun run "${rest[@]}")
       ;;
 
 
@@ -196,28 +199,20 @@ npm() {
         return $?
       fi
 
-      args="$(_maybebun_display "${@[2,-1]}")"
-      bun_display="bunx $args"
+      bun_cmd=(bunx "${rest[@]}")
       ;;
 
 
-    test|t)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun test $args"
-      else
-        bun_display="bun test"
-      fi
+    # `npm test` runs the package.json "test" script, which is what
+    # `bun run test` does. `bun test` is Bun's own test runner and would
+    # ignore the script entirely.
+    test|t|tst)
+      bun_cmd=(bun run test "${rest[@]}")
       ;;
 
 
     start)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun run start $args"
-      else
-        bun_display="bun run start"
-      fi
+      bun_cmd=(bun run start "${rest[@]}")
       ;;
 
 
@@ -227,17 +222,16 @@ npm() {
         return $?
       fi
 
-      args="$(_maybebun_display "${@[2,-1]}")"
-      bun_display="bun create $args"
+      bun_cmd=(bun create "${rest[@]}")
       ;;
 
 
     init)
       if (( $# == 1 )); then
-        bun_display="bun init"
+        bun_cmd=(bun init)
 
       elif [[ "$2" == "-y" || "$2" == "--yes" ]]; then
-        bun_display="bun init -y"
+        bun_cmd=(bun init -y)
 
       else
         command npm "$@"
@@ -247,42 +241,32 @@ npm() {
 
 
     link)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun link $args"
-      else
-        bun_display="bun link"
-      fi
+      bun_cmd=(bun link "${rest[@]}")
       ;;
 
 
     unlink)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun unlink $args"
-      else
-        bun_display="bun unlink"
-      fi
+      bun_cmd=(bun unlink "${rest[@]}")
       ;;
 
 
-    update|up)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun update $args"
-      else
-        bun_display="bun update"
-      fi
+    update|up|upgrade)
+      bun_cmd=(bun update "${rest[@]}")
       ;;
 
 
     outdated)
-      if (( $# > 1 )); then
-        args="$(_maybebun_display "${@[2,-1]}")"
-        bun_display="bun outdated $args"
-      else
-        bun_display="bun outdated"
-      fi
+      bun_cmd=(bun outdated "${rest[@]}")
+      ;;
+
+
+    publish)
+      bun_cmd=(bun publish "${rest[@]}")
+      ;;
+
+
+    pack)
+      bun_cmd=(bun pm pack "${rest[@]}")
       ;;
 
 
@@ -296,13 +280,12 @@ npm() {
   esac
 
   if ! _maybebun_check; then
-    return 1
+    # Bun or gum missing → still honor what the user typed.
+    command npm "$@"
+    return $?
   fi
 
-  _maybebun_choose \
-    "npm" \
-    "$original_display" \
-    "$bun_display"
+  _maybebun_choose "npm" original_cmd bun_cmd
 }
 
 
@@ -316,20 +299,15 @@ npx() {
     return $?
   fi
 
+  local -a original_cmd bun_cmd
+
+  original_cmd=(npx "$@")
+  bun_cmd=(bunx "$@")
+
   if ! _maybebun_check; then
-    return 1
+    command npx "$@"
+    return $?
   fi
 
-  local original_display
-  local bun_display
-  local args
-
-  original_display="$(_maybebun_display npx "$@")"
-  args="$(_maybebun_display "$@")"
-  bun_display="bunx $args"
-
-  _maybebun_choose \
-    "npx" \
-    "$original_display" \
-    "$bun_display"
+  _maybebun_choose "npx" original_cmd bun_cmd
 }

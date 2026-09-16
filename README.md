@@ -23,10 +23,8 @@ Instead of running it immediately, maybeBun shows a small interactive prompt:
 ```text
 Run with
 
-❯ Bun    bun add hono
-  npm    npm install hono
-
-↑↓ move  •  enter select  •  esc cancel
+❯ Bun  bun add hono
+  npm  npm install hono
 ```
 
 Choose **Bun** and maybeBun runs:
@@ -99,17 +97,24 @@ Some common translations include:
 | --- | --- |
 | `npm install` | `bun install` |
 | `npm install react` | `bun add react` |
-| `npm install -D typescript` | `bun add -d typescript` |
-| `npm install -g package` | `bun add -g package` |
+| `npm install -D typescript` | `bun add --dev typescript` |
+| `npm install -g package` | `bun add --global package` |
 | `npm uninstall package` | `bun remove package` |
 | `npm ci` | `bun install --frozen-lockfile` |
 | `npm run dev` | `bun run dev` |
-| `npm test` | `bun test` |
+| `npm test` | `bun run test` |
 | `npm start` | `bun run start` |
 | `npm update` | `bun update` |
 | `npx package` | `bunx package` |
 
 Commands without a clear Bun equivalent are passed directly to npm instead of being translated blindly.
+
+`npm test` maps to `bun run test`, not `bun test`. `npm test` runs the `test`
+script from your `package.json`, which is what `bun run test` does — `bun test`
+is Bun's own test runner and would ignore that script.
+
+maybeBun only prompts in an interactive terminal. In scripts, pipelines, and
+CI, the command you typed runs unchanged instead of blocking on a prompt.
 
 ## How it works
 
@@ -135,16 +140,14 @@ maybeBun:
 ```text
 Run with
 
-❯ Bun    bun add -g @bitkyc08/opencodex
-  npm    npm install -g @bitkyc08/opencodex
-
-↑↓ move  •  enter select  •  esc cancel
+❯ Bun  bun add --global @bitkyc08/opencodex
+  npm  npm install -g @bitkyc08/opencodex
 ```
 
 Select Bun:
 
 ```bash
-bun add -g @bitkyc08/opencodex
+bun add --global @bitkyc08/opencodex
 ```
 
 Or select npm to run the command exactly as you entered it.
@@ -171,7 +174,7 @@ exec zsh
 
 ## Uninstall
 
-Remove the maybeBun source line from `~/.zshrc`:
+Remove this line from `~/.zshrc`:
 
 ```bash
 source "$HOME/.maybebun/maybebun.zsh"
