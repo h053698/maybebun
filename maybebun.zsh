@@ -1,166 +1,335 @@
-brew install gum >/dev/null 2>&1
+# maybeBun
+# You typed npm. Maybe Bun?
+#
+# Source this file from ~/.zshrc.
+# Do not execute this file directly.
 
-python3 - <<'PY'
-from pathlib import Path
-import re
+# Prevent duplicate loading
+if [[ -n "${MAYBEBUN_LOADED:-}" ]]; then
+  return 0
+fi
 
-p = Path.home() / ".zshrc"
-s = p.read_text() if p.exists() else ""
+MAYBEBUN_LOADED=1
 
-# Remove previous versions
-patterns = [
-    r'\n*# npm / Bun chooser\nnpm\(\) \{.*?\n\}\n',
-    r'\n*# Block npm installs and suggest Bun instead\nnpm\(\) \{.*?\n\}\n',
-    r'\n*# Suggest Bun equivalents for npm commands\nnpm\(\) \{.*?\n\}\n',
-    r'\n*# maybebun-start.*?# maybebun-end\n?',
-    r'\n*# npm-bun-smart-start.*?# npm-bun-smart-end\n?',
-]
 
-for pattern in patterns:
-    s = re.sub(pattern, '\n', s, flags=re.S)
+# ─────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────
 
-p.write_text(s.rstrip() + "\n")
-PY
+_maybebun_check() {
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "maybeBun: Bun is not installed."
+    return 1
+  fi
 
-cat >> ~/.zshrc <<'EOF'
+  if ! command -v gum >/dev/null 2>&1; then
+    echo "maybeBun: gum is not installed."
+    echo "Install it with: brew install gum"
+    return 1
+  fi
 
-# maybebun-start
+  return 0
+}
+
+
+_maybebun_display() {
+  local result=""
+  local arg
+
+  for arg in "$@"; do
+    if [[ -z "$result" ]]; then
+      result="${(q)arg}"
+    else
+      result="$result ${(q)arg}"
+    fi
+  done
+
+  print -r -- "$result"
+}
+
 
 _maybebun_choose() {
-  local original="$1"
-  local converted="$2"
-  local label="${3:-npm}"
+  local label="$1"
+  shift
+
+  local original_display="$1"
+  shift
+
+  local bun_display="$1"
+  shift
 
   echo
 
   local choice
+
   choice=$(
-    printf 'Bun\t%s\n%s\t%s\n' "$converted" "$label" "$original" |
-    gum choose \
-      --header "Run with" \
-      --footer "↑↓ move  •  enter select  •  esc cancel" \
-      --cursor "❯ " \
-      --cursor-prefix "  " \
-      --selected-prefix "❯ " \
-      --unselected-prefix "  "
+    printf 'Bun\t%s\n%s\t%s\n' \
+      "$bun_display" \
+      "$label" \
+      "$original_display" |
+      gum choose \
+        --header "Run with" \
+        --footer "↑↓ move  •  enter select  •  esc cancel" \
+        --cursor "❯ " \
+        --cursor-prefix "  " \
+        --selected-prefix "❯ " \
+        --unselected-prefix "  "
   )
 
-  [[ -z "$choice" ]] && return 130
+  local status=$?
+
+  if (( status != 0 )) || [[ -z "$choice" ]]; then
+    echo
+    return 130
+  fi
 
   echo
 
   if [[ "$choice" == Bun$'\t'* ]]; then
-    eval "$converted"
+    eval "$bun_display"
   else
-    if [[ "$label" == "npx" ]]; then
-      command npx ${(z)${original#npx }}
-    else
-      command npm ${(z)${original#npm }}
-    fi
+    eval "$original_display"
   fi
 }
 
+
+# ─────────────────────────────────────────────
+# npm
+# ─────────────────────────────────────────────
+
 npm() {
-  local original="npm ${(j: :)${(q)@}}"
-  local converted=""
+  # No arguments → normal npm
+  if (( $# == 0 )); then
+    command npm
+    return $?
+  fi
+
+  local original_display
+  local bun_display=""
   local args=""
+  local arg
+
+  original_display="$(_maybebun_display npm "$@")"
 
   case "$1" in
 
-    install|i|add)
-      if [[ $# -eq 1 ]]; then
-        converted="bun install"
+    install|i)
 
+      # npm install
+      if (( $# == 1 )); then
+        bun_display="bun install"
+
+      # npm install -g foo
       elif [[ "$2" == "-g" || "$2" == "--global" ]]; then
-        converted="bun add -g ${(j: :)${(q)@[3,-1]}}"
+        args="$(_maybebun_display "${@[3,-1]}")"
+        bun_display="bun add -g $args"
 
+      # npm install -D foo
       elif [[ "$2" == "-D" || "$2" == "--save-dev" ]]; then
-        converted="bun add -d ${(j: :)${(q)@[3,-1]}}"
+        args="$(_maybebun_display "${@[3,-1]}")"
+        bun_display="bun add -d $args"
 
+      # npm install -O foo
       elif [[ "$2" == "-O" || "$2" == "--save-optional" ]]; then
-        converted="bun add --optional ${(j: :)${(q)@[3,-1]}}"
+        args="$(_maybebun_display "${@[3,-1]}")"
+        bun_display="bun add --optional $args"
 
+      # npm install foo
       else
-        args="${(j: :)${(q)@[2,-1]}}"
-        args="${args//--save-dev/-d}"
-        args="${args//--global/-g}"
-        converted="bun add $args"
+        local -a converted
+        converted=()
+
+        for arg in "${@[2,-1]}"; do
+          case "$arg" in
+            --save-dev)
+              converted+=("-d")
+              ;;
+
+            --global)
+              converted+=("-g")
+              ;;
+
+            --save-optional)
+              converted+=("--optional")
+              ;;
+
+            --save)
+              ;;
+
+            *)
+              converted+=("$arg")
+              ;;
+          esac
+        done
+
+        args="$(_maybebun_display "${converted[@]}")"
+        bun_display="bun add $args"
       fi
       ;;
+
 
     uninstall|remove|rm|un)
-      converted="bun remove ${(j: :)${(q)@[2,-1]}}"
+      args="$(_maybebun_display "${@[2,-1]}")"
+      bun_display="bun remove $args"
       ;;
+
 
     ci)
-      converted="bun install --frozen-lockfile"
+      bun_display="bun install --frozen-lockfile"
       ;;
+
 
     run|run-script)
-      converted="bun run ${(j: :)${(q)@[2,-1]}}"
+      if (( $# < 2 )); then
+        command npm "$@"
+        return $?
+      fi
+
+      args="$(_maybebun_display "${@[2,-1]}")"
+      bun_display="bun run $args"
       ;;
+
 
     exec|x)
-      converted="bunx ${(j: :)${(q)@[2,-1]}}"
+      if (( $# < 2 )); then
+        command npm "$@"
+        return $?
+      fi
+
+      args="$(_maybebun_display "${@[2,-1]}")"
+      bun_display="bunx $args"
       ;;
+
 
     test|t)
-      if [[ $# -gt 1 ]]; then
-        converted="bun test ${(j: :)${(q)@[2,-1]}}"
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun test $args"
       else
-        converted="bun test"
+        bun_display="bun test"
       fi
       ;;
+
 
     start)
-      converted="bun run start"
-      ;;
-
-    create)
-      converted="bun create ${(j: :)${(q)@[2,-1]}}"
-      ;;
-
-    init)
-      if [[ "$2" == "-y" || "$2" == "--yes" ]]; then
-        converted="bun init -y"
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun run start $args"
       else
-        converted="bun init"
+        bun_display="bun run start"
       fi
       ;;
 
-    link)
-      converted="bun link ${(j: :)${(q)@[2,-1]}}"
+
+    create)
+      if (( $# < 2 )); then
+        command npm "$@"
+        return $?
+      fi
+
+      args="$(_maybebun_display "${@[2,-1]}")"
+      bun_display="bun create $args"
       ;;
+
+
+    init)
+      if (( $# == 1 )); then
+        bun_display="bun init"
+
+      elif [[ "$2" == "-y" || "$2" == "--yes" ]]; then
+        bun_display="bun init -y"
+
+      else
+        command npm "$@"
+        return $?
+      fi
+      ;;
+
+
+    link)
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun link $args"
+      else
+        bun_display="bun link"
+      fi
+      ;;
+
 
     unlink)
-      converted="bun unlink ${(j: :)${(q)@[2,-1]}}"
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun unlink $args"
+      else
+        bun_display="bun unlink"
+      fi
       ;;
+
 
     update|up)
-      converted="bun update ${(j: :)${(q)@[2,-1]}}"
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun update $args"
+      else
+        bun_display="bun update"
+      fi
       ;;
+
 
     outdated)
-      converted="bun outdated"
+      if (( $# > 1 )); then
+        args="$(_maybebun_display "${@[2,-1]}")"
+        bun_display="bun outdated $args"
+      else
+        bun_display="bun outdated"
+      fi
       ;;
 
+
+    # No safe/obvious Bun equivalent.
+    # Run npm normally.
     *)
       command npm "$@"
       return $?
       ;;
+
   esac
 
-  _maybebun_choose "$original" "$converted" "npm"
+  if ! _maybebun_check; then
+    return 1
+  fi
+
+  _maybebun_choose \
+    "npm" \
+    "$original_display" \
+    "$bun_display"
 }
+
+
+# ─────────────────────────────────────────────
+# npx
+# ─────────────────────────────────────────────
 
 npx() {
-  local original="npx ${(j: :)${(q)@}}"
-  local converted="bunx ${(j: :)${(q)@}}"
+  if (( $# == 0 )); then
+    command npx
+    return $?
+  fi
 
-  _maybebun_choose "$original" "$converted" "npx"
+  if ! _maybebun_check; then
+    return 1
+  fi
+
+  local original_display
+  local bun_display
+  local args
+
+  original_display="$(_maybebun_display npx "$@")"
+  args="$(_maybebun_display "$@")"
+  bun_display="bunx $args"
+
+  _maybebun_choose \
+    "npx" \
+    "$original_display" \
+    "$bun_display"
 }
-
-# maybebun-end
-EOF
-
-exec zsh
